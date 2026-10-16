@@ -35,6 +35,19 @@ async function open(code,role,intent){
     assert.equal((await open(code,joinRole,'join')).result,'not-found');
     const fresh=await open(code,joinRole,'create');assert.equal(fresh.result,'ok');fresh.ws.close();
   }
+  // Joiner departure also retires both registrations. A new session must work
+  // without a process restart, for either creator media role.
+  for(const [code,creatorRole] of [['6K4M2Q','sender'],['5K4M2Q','receiver']]){
+    const joinRole=creatorRole==='sender'?'receiver':'sender';
+    const creator=await open(code,creatorRole,'create');
+    const joiner=await open(code,joinRole,'join');
+    assert.equal(creator.result,'ok');assert.equal(joiner.result,'ok');
+    joiner.ws.close();await until(()=>creator.ws.readyState===WebSocket.CLOSED);
+    assert.ok(creator.messages.some(m=>m.type==='peer-left'));
+    assert.equal((await open(code,joinRole,'join')).result,'not-found');
+    const fresh=await open(code,creatorRole,'create');assert.equal(fresh.result,'ok');
+    fresh.ws.close();await until(()=>fresh.ws.readyState===WebSocket.CLOSED);
+  }
   await sleep(100);
   assert.ok(!output.includes('7K4M2Q')&&!output.includes('8K4M2Q')&&!output.includes('pairing-qr-secret-fixture'));
   for(const line of output.trim().split(/\r?\n/))assert.ok(!Object.hasOwn(JSON.parse(line),'session'));
