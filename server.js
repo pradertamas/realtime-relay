@@ -88,8 +88,8 @@ server.on('upgrade', (req, socket, head) => {
       ws.terminate();
     });
     ws.on('message', (data, isBinary) => {
-      if (role !== 'sender' || cleaned) return;
-      const receiver = session.receiver;
+      if (cleaned) return;
+      const receiver = session[role === 'sender' ? 'receiver' : 'sender'];
       if (!receiver || receiver.readyState !== WebSocket.OPEN) return;
       if (receiver.bufferedAmount + data.length > MAX_BUFFERED_BYTES) {
         receiver.terminate();

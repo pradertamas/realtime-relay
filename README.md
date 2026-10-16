@@ -29,9 +29,7 @@ ws://localhost:10000/ws?session=sample_123&role=receiver
 ```
 
 Each session allows one sender and one receiver. Duplicate roles are rejected
-with HTTP 409; invalid parameters with HTTP 400. Only sender messages reach the
-receiver in the same session. Text/binary type and payload bytes are preserved.
-Receiver messages are ignored. Messages without a connected receiver are dropped.
+with HTTP 409; invalid parameters with HTTP 400. Messages from either role reach only the opposite role in the same session. Text/binary type and payload bytes are preserved. Messages without a connected opposite peer are dropped.
 
 Sessions are ephemeral and stored only in memory. Disconnections remove the
 client; empty sessions are deleted. There is no message history or replay.
@@ -51,3 +49,15 @@ Use a single instance: in-memory sessions are not shared between instances.
 The session identifier is the only access boundary; anyone who knows it can
 occupy an available role. Use unpredictable IDs and HTTPS/WSS outside local
 development. This proof of concept does not provide authentication.
+
+## PoC 4A signaling change (not deployed)
+
+The forwarding path is now bidirectional, enabling receiver ready/answer/ICE
+messages. Registration, role exclusivity, 64 KiB input limit, heartbeat and
+1 MiB output backpressure remain unchanged. The server treats payloads as opaque;
+it does not process SDP or media. PoC 4A clients send JSON control/SDP/ICE only.
+Video travels over WebRTC RTP, never this WebSocket.
+The deployed one-way server must be manually updated before the PoC can work
+at the configured public WSS endpoint. No deployment is performed by this change.
+
+Run `node verify-signaling.cjs` for isolated local two-way/session/limit checks.
