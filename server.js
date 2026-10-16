@@ -47,7 +47,11 @@ server.on('upgrade', (req, socket, head) => {
   }
   const candidateSession = url.searchParams.get('session');
   const candidateRole = url.searchParams.get('role');
-  // Only validated identifiers enter logs or session storage.
+  const intent = url.searchParams.get('intent');
+  if (intent !== null && (!['create', 'join'].includes(intent) || url.searchParams.getAll('intent').length !== 1)) {
+    reject('400 Bad Request', 'invalid intent'); return;
+  }
+  // Only validated identifiers enter session storage; they never enter logs.
   if (/^[A-Za-z0-9_-]{6,64}$/.test(candidateSession || '')) sessionId = candidateSession;
   if (candidateRole === 'sender' || candidateRole === 'receiver') role = candidateRole;
   if (url.pathname !== '/ws') {
@@ -59,7 +63,8 @@ server.on('upgrade', (req, socket, head) => {
     reject('400 Bad Request', 'invalid session or role');
     return;
   }
-  if (sessions.get(sessionId)?.[role]) {
+  // Legacy diagnostic sessions cannot enter explicit pairing sessions.
+  if (!intent && (sessions.get(sessionId)?.[role] || sessions.get(sessionId)?.creator)) {
     reject('409 Conflict', 'role occupied');
     return;
   }
@@ -68,9 +73,21 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
+    const existing = sessions.get(sessionId);
+    if (intent) {
+      const status = intent === 'create' ? (existing ? 'conflict' : 'ok') :
+        !existing?.creator || existing.creator.readyState !== WebSocket.OPEN ? 'not-found' : existing[role] || existing.paired ? 'role-occupied' : 'ok';
+      if (status !== 'ok') {
+        ws.on('error', () => {});
+        ws.send(JSON.stringify({ type: 'registration', status, intent, role }));
+        ws.close(1008, status); return;
+      }
+    }
     const session = sessions.get(sessionId) || {};
     sessions.set(sessionId, session);
     session[role] = ws;
+    if (intent === 'create') session.creator = ws;
+    if (intent === 'join') session.paired = true;
     ws.isAlive = true;
     log('connection accepted', sessionId, role);
 
@@ -79,7 +96,13 @@ server.on('upgrade', (req, socket, head) => {
       if (cleaned) return;
       cleaned = true;
       if (session[role] === ws) delete session[role];
-      if (!session.sender && !session.receiver) sessions.delete(sessionId);
+      if (session.creator) {
+        if (sessions.get(sessionId) === session) sessions.delete(sessionId);
+        const other = session[role === 'sender' ? 'receiver' : 'sender'];
+        if (other?.readyState === WebSocket.OPEN) {
+          other.send(JSON.stringify({type:'peer-left'})); other.close(1000, 'Pairing ended');
+        }
+      } else if (!session.sender && !session.receiver) sessions.delete(sessionId);
       log('connection closed', sessionId, role);
     }
     ws.on('pong', () => { ws.isAlive = true; });
@@ -100,6 +123,12 @@ server.on('upgrade', (req, socket, head) => {
         if (error) receiver.terminate();
       });
     });
+    if (intent) ws.send(JSON.stringify({type:'registration',status:'ok',intent,role}));
+    if (intent === 'join') {
+      for (const peer of [session.sender, session.receiver]) {
+        if (peer?.readyState === WebSocket.OPEN) peer.send(JSON.stringify({type:'peer-present'}));
+      }
+    }
   });
 });
 
