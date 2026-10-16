@@ -23,7 +23,8 @@ const wss = new WebSocketServer({
 });
 
 function log(event, session = null, role = null, reason = undefined) {
-  console.log(JSON.stringify({ event, session, role, ...(reason && { reason }) }));
+  // Session IDs are short-lived pairing secrets; never put them in application logs.
+  console.log(JSON.stringify({ event, role, ...(reason && { reason }) }));
 }
 
 server.on('upgrade', (req, socket, head) => {

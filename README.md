@@ -1,63 +1,52 @@
-# realtime-relay
+﻿# realtime-relay
 
-A minimal generic WebSocket relay using Node.js and `ws`. No database or frontend.
+Release: two-way WebRTC signaling for direct P2P screen sharing and six-character
+pairing codes. Video travels directly over WebRTC, never through this WebSocket.
+No TURN/Cloudflare dependency, credential route or secret environment variables
+are part of the active server. GET/POST /turn/credentials return 404.
 
-Requires Node.js 22 or 24 and npm. Install and run locally:
+## Run
 
-```sh
-npm install
+Node.js 22 or 24 and npm:
+
+```text
+npm ci
 npm start
 ```
 
-The server listens on `0.0.0.0`, using `PORT` or `10000` by default.
+PORT defaults to 10000. GET / returns the JSON health response. Render uses
+npm ci / npm start, the existing HTTPS/WSS domain and one service instance.
+No commit, push or deployment was performed by this cleanup.
 
-`GET /` is a health/wake-up endpoint returning:
+## Signaling
 
-```json
-{"status":"ok","service":"realtime-relay"}
-```
+Connect to /ws?session=<id>&role=sender or role=receiver. IDs contain 6-64 ASCII
+letters, digits, underscores or hyphens. The normal client generates six random
+characters from 23456789ABCDEFGHJKLMNPQRSTUVWXYZ and uses that code as the ID.
+Each session permits one sender and one receiver; duplicates return HTTP 409,
+invalid parameters HTTP 400. Each peer's payload is forwarded unchanged only
+to the opposite role in the same session. Missing peers mean dropped messages.
+The clients use ready, offer, answer, trickle ICE and bye; no video payloads.
 
-Connect using `/ws?session=<sessionId>&role=<role>`. A session ID must contain
-6–64 ASCII letters, digits, hyphens, or underscores. Valid roles are `sender`
-and `receiver`; each query parameter must occur exactly once.
+Sessions exist only in memory; empty sessions disappear. There is no session
+listing, directory, history, account or persistent storage. The code is the
+access boundary: keep it private and use a fresh code for every share.
 
-Example URLs:
+Input limit: 64 KiB; output backpressure limit: 1 MiB; capacity: 1000 clients;
+heartbeat: every 30 seconds. Unresponsive clients are terminated. Application
+logs contain event/role/reason, never payloads or session/pairing identifiers.
+Infrastructure access logs must also avoid retaining WebSocket query strings.
+
+## Checks
 
 ```text
-ws://localhost:10000/ws?session=sample_123&role=sender
-ws://localhost:10000/ws?session=sample_123&role=receiver
+node --check server.js
+node verify-signaling.cjs
+node verify-pairing-privacy.cjs
 ```
 
-Each session allows one sender and one receiver. Duplicate roles are rejected
-with HTTP 409; invalid parameters with HTTP 400. Messages from either role reach only the opposite role in the same session. Text/binary type and payload bytes are preserved. Messages without a connected opposite peer are dropped.
+These use isolated local processes. The optional verify-remote-signaling.cjs
+checks the public WSS service only when run explicitly; cleanup does not run it.
 
-Sessions are ephemeral and stored only in memory. Disconnections remove the
-client; empty sessions are deleted. There is no message history or replay.
-Restarts erase all sessions. Clients must reconnect as needed.
-
-Incoming messages are limited to 64 KiB. Ping/pong checks run every 30 seconds;
-unresponsive clients are terminated at the following check. Slow receivers are
-disconnected when their pending output would exceed 1 MiB. The service accepts
-at most 1,000 concurrent clients (HTTP 503 at capacity). No payloads are logged.
-
-For Render, create a Web Service from this repository with build command
-`npm ci` and start command `npm start`. Select Node.js 24 (for example through
-`NODE_VERSION=24`); the package also supports Node.js 22. Render supplies `PORT`.
-Use `/` as the health check path and `wss://<service-host>/ws?...` for clients.
-Use a single instance: in-memory sessions are not shared between instances.
-
-The session identifier is the only access boundary; anyone who knows it can
-occupy an available role. Use unpredictable IDs and HTTPS/WSS outside local
-development. This proof of concept does not provide authentication.
-
-## PoC 4A signaling change (not deployed)
-
-The forwarding path is now bidirectional, enabling receiver ready/answer/ICE
-messages. Registration, role exclusivity, 64 KiB input limit, heartbeat and
-1 MiB output backpressure remain unchanged. The server treats payloads as opaque;
-it does not process SDP or media. PoC 4A clients send JSON control/SDP/ICE only.
-Video travels over WebRTC RTP, never this WebSocket.
-The deployed one-way server must be manually updated before the PoC can work
-at the configured public WSS endpoint. No deployment is performed by this change.
-
-Run `node verify-signaling.cjs` for isolated local two-way/session/limit checks.
+The historical, inactive PoC 4B TURN experiment is preserved exclusively under
+experiments/poc4b/. It is not imported by server.js and is not a release asset.
