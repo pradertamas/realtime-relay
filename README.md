@@ -76,6 +76,7 @@ node verify-signaling.cjs
 node verify-pairing-privacy.cjs
 node verify-symmetric-pairing.cjs
 node verify-join-limit.cjs
+node verify-remote-presence.cjs
 ```
 
 These use isolated local processes. The optional verify-remote-signaling.cjs
@@ -83,3 +84,48 @@ checks the public WSS service only when run explicitly; cleanup does not run it.
 
 The historical, inactive PoC 4B TURN experiment is preserved exclusively under
 experiments/poc4b/. It is not imported by server.js and is not a release asset.
+
+## Persistent remote link presence (local, not deployed here)
+
+Successful explicit registrations now advertise `remotePresence:true`. The
+Android transport latches the first response before sending any persistent
+secret, avoiding token forwarding through an older opaque-only relay.
+
+`remote-presence-register` with a canonical 22-character Base64URL/128-bit token
+is accepted only from a live sender CREATE creator, unpaired/without receiver.
+Only normal six-character pairing sessions may publish presence. The server
+consumes this reserved control type; it never forwards it to the opposite peer.
+Reply: `{type:"remote-presence",status:"registered"}` (or denied/conflict).
+`remote-presence-remove` removes this socket's mapping. A socket has at most one
+mapping; registering a replacement synchronously removes the old hash. No DB,
+expiry or persistent device directory. `remote-presence.cjs` stores
+SHA-256(token) -> {ws, session, sessionId} plus a weak socket -> hash index.
+Keys disappear on disconnect, session cleanup or successful receiver JOIN,
+before consent/streaming. Rotation is a new sender registration; Android
+publishes the same installation token again. Resolve also validates live state.
+
+`POST /remote/resolve`, JSON `{token:...}` (512-byte body limit):
+200 `{status:"available",session:"<CODE>"}` for waiting presence;
+404 `{status:"unavailable"}` for unknown/offline/busy/consumed presence.
+Invalid JSON/token -> 400, oversized -> 413, other method -> 405, throttled ->
+429; all use a generic unavailable body and Cache-Control:no-store. There is
+no GET/query-token API. Logs never contain request bodies, URLs or tokens.
+
+CORS allows https://pradertamas.github.io, http://localhost:8080 and
+http://127.0.0.1:8080. POST and OPTIONS preflight support Content-Type only;
+other origins get 403. No-Origin server clients can call with the bearer token;
+CORS is not authentication. Optional `REMOTE_ALLOWED_ORIGINS` adds comma-separated
+exact http(s) origins for Render/local environment configuration; no wildcard.
+The default needs no new environment variables and no API/master credential.
+
+Resolve uses separate in-memory 60-second fixed-window limits: 240 requests
+globally per instance and 20 per token hash. Invalid bodies count against the
+global budget; at most 240 distinct hash keys per token-limit window. Existing
+JOIN limits are unchanged. Neither limiter trusts unverified proxy/IP headers.
+The global budget can limit shared traffic; this is PoC abuse protection, not
+per-user identity or production DoS prevention. No resolve directory/list API.
+
+Manually deploy server.js + remote-presence.cjs + existing join-limit.cjs after
+review; updated Android/web clients are also required for the feature. Do not
+expect remote links to work against an older deployment. The privacy verify
+still requires GET/POST /turn/credentials to return 404. No TURN endpoint added.

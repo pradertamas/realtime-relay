@@ -4,12 +4,15 @@ const http = require('node:http');
 const { WebSocket, WebSocketServer } = require('ws');
 const { JoinLimit } = require('./join-limit.cjs');
 const joinLimit = new JoinLimit();
+const { RemotePresence, DEFAULT_ORIGINS } = require('./remote-presence.cjs');
+const remote = new RemotePresence({origins:[...DEFAULT_ORIGINS,...(process.env.REMOTE_ALLOWED_ORIGINS||'').split(',').map(v=>v.trim()).filter(Boolean)]});
 
 const PORT = process.env.PORT || 10000;
 const MAX_CLIENTS = 1000;
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 const sessions = new Map();
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
+  if(await remote.http(req,res))return;
   if (req.method === 'GET' && req.url === '/') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', service: 'realtime-relay' }));
@@ -90,6 +93,7 @@ server.on('upgrade', (req, socket, head) => {
     session[role] = ws;
     if (intent === 'create') session.creator = ws;
     if (intent === 'join') session.paired = true;
+    if (intent === 'join') remote.remove(session.creator);
     ws.isAlive = true;
     log('connection accepted', sessionId, role);
 
@@ -97,6 +101,7 @@ server.on('upgrade', (req, socket, head) => {
     function cleanup() {
       if (cleaned) return;
       cleaned = true;
+      remote.remove(ws);
       if (session[role] === ws) delete session[role];
       if (session.creator) {
         if (sessions.get(sessionId) === session) sessions.delete(sessionId);
@@ -115,6 +120,15 @@ server.on('upgrade', (req, socket, head) => {
     });
     ws.on('message', (data, isBinary) => {
       if (cleaned) return;
+      if(!isBinary){
+        let message;try{message=JSON.parse(data.toString());}catch{}
+        if(typeof message?.type==='string'&&message.type.startsWith('remote-presence-')){
+          let status='denied';
+          if(message.type==='remote-presence-remove'){remote.remove(ws);status='removed';}
+          else if(message.type==='remote-presence-register'&&role==='sender'&&intent==='create')status=remote.register(ws,message.token,session,sessionId);
+          ws.send(JSON.stringify({type:'remote-presence',status}));return;
+        }
+      }
       const receiver = session[role === 'sender' ? 'receiver' : 'sender'];
       if (!receiver || receiver.readyState !== WebSocket.OPEN) return;
       if (receiver.bufferedAmount + data.length > MAX_BUFFERED_BYTES) {
@@ -125,7 +139,7 @@ server.on('upgrade', (req, socket, head) => {
         if (error) receiver.terminate();
       });
     });
-    if (intent) ws.send(JSON.stringify({type:'registration',status:'ok',intent,role}));
+    if (intent) ws.send(JSON.stringify({type:'registration',status:'ok',intent,role,remotePresence:true}));
     if (intent === 'join') {
       for (const peer of [session.sender, session.receiver]) {
         if (peer?.readyState === WebSocket.OPEN) peer.send(JSON.stringify({type:'peer-present'}));
