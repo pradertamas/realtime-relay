@@ -29,6 +29,21 @@ close with 1008 after the response. On the second success both peers receive
 Closing either participant deletes the pairing and closes/notifies the survivor.
 CREATE conflicts are retried by clients at most four registrations total.
 
+Automatic pairing adds one rejection status: `rate-limited` (close 1008).
+`join-limit.cjs` uses a 60-second fixed window, 12 JOIN attempts per exact code
+and 120 JOIN attempts total per process. All JOINs count, including not-found.
+CREATE and legacy diagnostics are unaffected. Counters are bounded to at most
+120 code entries per window and never logged. No new environment variables.
+
+The repo contains no trusted proxy/IP configuration proving the deployed Render
+forwarding chain. We deliberately do not treat arbitrary X-Forwarded-For or the
+load balancer socket address as a verified client identity. The limits are
+code-scoped plus global, not per-user/IP protection; distributed guesses and
+global-budget denial of service remain limitations. In a larger deployment the
+global budget needs sizing and trusted edge limits. This is a minimal single
+instance PoC safeguard, not production abuse prevention. Header trust background:
+https://www.rfc-editor.org/rfc/rfc7239.html#section-8.1 .
+
 The new relay and both clients must be released together. An old relay without
 intent handling does not provide these strict reservation semantics.
 
@@ -60,6 +75,7 @@ node --check server.js
 node verify-signaling.cjs
 node verify-pairing-privacy.cjs
 node verify-symmetric-pairing.cjs
+node verify-join-limit.cjs
 ```
 
 These use isolated local processes. The optional verify-remote-signaling.cjs

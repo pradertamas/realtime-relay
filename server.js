@@ -2,6 +2,8 @@
 
 const http = require('node:http');
 const { WebSocket, WebSocketServer } = require('ws');
+const { JoinLimit } = require('./join-limit.cjs');
+const joinLimit = new JoinLimit();
 
 const PORT = process.env.PORT || 10000;
 const MAX_CLIENTS = 1000;
@@ -75,7 +77,7 @@ server.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => {
     const existing = sessions.get(sessionId);
     if (intent) {
-      const status = intent === 'create' ? (existing ? 'conflict' : 'ok') :
+      const status = intent === 'join' && !joinLimit.allow(sessionId) ? 'rate-limited' : intent === 'create' ? (existing ? 'conflict' : 'ok') :
         !existing?.creator || existing.creator.readyState !== WebSocket.OPEN ? 'not-found' : existing[role] || existing.paired ? 'role-occupied' : 'ok';
       if (status !== 'ok') {
         ws.on('error', () => {});
