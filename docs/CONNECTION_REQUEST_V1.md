@@ -73,8 +73,14 @@ another recipient take over. A new attempt requires a new request.
 Explicit winner withdrawal uses POST /connection-requests/:id/withdraw with only
 the winning recipientClaimSecret as Bearer. ACCEPTED/CONNECTING -> FAILED with
 failureReason recipient_withdrew and terminalAt equal to current server time.
-CONNECTING withdrawal uses the existing binding invalidation: release the reserved
-code and close pending/authenticated setup sockets. Readiness, session setup and
+CONNECTING withdrawal uses the existing binding invalidation: close pending/authenticated
+setup sockets immediately, but quarantine the code until the request's existing
+120-second terminal tombstone expires. During quarantine, code-only legacy CREATE/JOIN
+and old request-auth cannot establish a session; the code cannot be assigned to a
+different request. This prevents protected-to-legacy downgrade. Cancel and establishment
+timeout of CONNECTING follow the same rule. Tombstone deletion releases the mapping
+only if it still belongs to that request; no additional retention period is added.
+CONNECTED active-session reservation/cleanup semantics are unchanged. Readiness, session setup and
 Accept cannot reopen the request. Backgrounding alone never withdraws.
 
 During the 120-second terminal tombstone, the same winning claim may retry withdraw

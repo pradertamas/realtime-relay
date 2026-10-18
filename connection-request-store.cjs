@@ -45,7 +45,7 @@ class ConnectionRequestStore {
     record.terminalAt = at;
     if (failureReason) record.failureReason = failureReason;
     if (record.binding && state !== 'CONNECTED') {
-      this.#codes.delete(record.binding.sessionCode);
+      // Keep the code protected until terminal tombstone expiry, never downgrade to legacy.
       for (const invalidate of this.#invalidators) invalidate(record.requestId);
     }
   }
@@ -55,6 +55,8 @@ class ConnectionRequestStore {
     if (!record) return null;
     this.#expire(record, now);
     if (record.terminalAt !== undefined && now >= record.terminalAt + TOMBSTONE_MS) {
+      if (record.state !== 'CONNECTED' && record.binding &&
+        this.#codes.get(record.binding.sessionCode) === id) this.#codes.delete(record.binding.sessionCode);
       this.#records.delete(id); return null;
     }
     return record;

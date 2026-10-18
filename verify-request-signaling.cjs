@@ -82,7 +82,7 @@ async function units() {
     const f = fixture(); f.both(); const code = f.bind().body.session.code; let invalidated = 0;
     f.store.onBindingInvalidated(() => invalidated++);
     assert.equal(f.store.cancel(f.r.requestId, f.r.initiatorSecret).code, 200);
-    assert.equal(f.store.boundRequestId(code), null); assert.equal(f.bind().code, 410);
+    assert.equal(f.store.boundRequestId(code), f.r.requestId); assert.equal(f.bind().code, 410);
     assert.equal(f.store.authorizeSocket(f.r.requestId, code, f.c, 'receiver', 'join'), null);
     f.store.cancel(f.r.requestId, f.r.initiatorSecret); assert.equal(invalidated, 1);
   });
@@ -90,7 +90,7 @@ async function units() {
     for (const lazy of [true, false]) {
       const f = fixture(); f.both(); const code = f.bind().body.session.code; f.advance(119999);
       assert.equal(f.status().body.state, 'CONNECTING'); f.advance(1);
-      if (!lazy) f.store.cleanup(); assert.equal(f.store.boundRequestId(code), null);
+      if (!lazy) f.store.cleanup(); assert.equal(f.store.boundRequestId(code), f.r.requestId);
       assert.equal(f.status().body.failureReason, 'establishment_timeout'); assert.equal(f.bind().code, 410);
       assert.equal(f.store.completeBinding(f.r.requestId), false);
     }
@@ -203,14 +203,18 @@ async function integration() {
     assert.equal((await call(cancel.path + '/cancel', cancel.r.initiatorSecret)).code, 200);
     await until(() => registered.closed && pending.closed);
     assert.equal(relay.requestStore.authorizeSocket(cancel.r.requestId, cancel.i.code, cancel.c, cancel.j.role, 'join'), null);
-    assert.equal(relay.requestStore.boundRequestId(cancel.i.code), null); passed++;
+    assert.equal(relay.requestStore.boundRequestId(cancel.i.code), cancel.r.requestId); passed++;
+    await denied(cancel, cancel.i, cancel.r.initiatorSecret);
+    await denied(cancel, cancel.j, cancel.c);
     const timeout = await setup();
     const waiting = await open(timeout.i.code, timeout.i.role, 'create'); auth(waiting, timeout, timeout.r.initiatorSecret);
     await until(() => waiting.messages.some(m => m.status === 'ok'));
     now += 120000;
     const timed = await call(timeout.path + '/status', timeout.c, undefined, 'GET');
     assert.equal(timed.code, 410); assert.equal(timed.body.failureReason, 'establishment_timeout');
-    await until(() => waiting.closed); assert.equal(relay.requestStore.boundRequestId(timeout.i.code), null); passed++;
+    await until(() => waiting.closed); assert.equal(relay.requestStore.boundRequestId(timeout.i.code), timeout.r.requestId); passed++;
+    await denied(timeout, timeout.i, null, {type: 'offer', sdp: 'quarantined'});
+    await denied(timeout, timeout.j, timeout.c);
     // Terminal HTTP record retention must be independent of a live signaling pair.
     const live = await setup();
     const liveI = await open(live.i.code, live.i.role, 'create'); auth(liveI, live, live.r.initiatorSecret);

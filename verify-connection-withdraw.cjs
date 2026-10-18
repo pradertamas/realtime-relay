@@ -40,12 +40,12 @@ async function main() {
     for (const value of [f.c, f.r.initiatorSecret, f.r.recipientCapability]) assert.ok(!serialized.includes(value));
     assert.ok(!/Hash|Secret|Capability/.test(serialized));
   });
-  test('CONNECTING invalidates exactly once and releases code for reuse', () => {
+  test('CONNECTING invalidates once and quarantines code until original tombstone expiry', () => {
     const f = fixture({codeGenerator: () => 'AAAAAA'}), code = f.bind();
     const before = f.status().body; let calls = 0;
     f.store.onBindingInvalidated(id => { assert.equal(id, f.r.requestId); calls++; });
     assert.equal(f.withdraw().code, 200); assert.equal(calls, 1);
-    assert.equal(f.store.boundRequestId(code), null);
+    assert.equal(f.store.boundRequestId(code), f.r.requestId);
     assert.equal(f.store.authorizeSocket(f.r.requestId, code, f.c, 'receiver', 'join'), null);
     f.advance(1000); assert.equal(f.withdraw().code, 200); assert.equal(calls, 1);
     assert.equal(f.status().body.acceptedAt, before.acceptedAt);
@@ -53,16 +53,37 @@ async function main() {
     const r = f.store.create('receive').body, c = secret();
     f.store.accept(r.requestId, r.recipientCapability, c);
     for (const auth of [r.initiatorSecret, c]) f.store.participantState(r.requestId, auth, true);
-    assert.equal(f.store.session(r.requestId, r.initiatorSecret).body.session.code, code);
+    assert.equal(f.store.session(r.requestId, r.initiatorSecret).code, 503);
     assert.equal(f.withdraw().code, 200); assert.equal(calls, 1);
-    assert.equal(f.store.boundRequestId(code), r.requestId);
+    assert.equal(f.store.boundRequestId(code), f.r.requestId);
     assert.equal(f.store.authorizeSocket(f.r.requestId, code, f.c, 'receiver', 'join'), null);
+    f.advance(TOMBSTONE_MS - 1001); assert.equal(f.store.boundRequestId(code), f.r.requestId);
+    f.advance(1); assert.equal(f.store.boundRequestId(code), null);
+    assert.equal(f.status().code, 404);
+    for (const auth of [r.initiatorSecret, c]) f.store.participantState(r.requestId, auth, true);
+    assert.equal(f.store.session(r.requestId, r.initiatorSecret).body.session.code, code);
   });
   test('retry preserves first terminalAt, retention and deadlines', () => {
     const f = fixture(); f.advance(1234); const first = f.withdraw();
     f.advance(TOMBSTONE_MS - 1); assert.equal(f.withdraw().code, 200);
     assert.notEqual(f.withdraw().body.serverNow, first.body.serverNow);
     f.advance(1); assert.equal(f.withdraw().code, 404); assert.equal(f.status().code, 404);
+  });
+  test('Cancel/timeout quarantine boundary, cleanup and binding-free terminals', () => {
+    for (const cause of ['cancel', 'timeout']) for (const cleanup of [false, true]) {
+      const f = fixture({codeGenerator: () => 'BBBBBB'}), code = f.bind();
+      if (cause === 'cancel') f.store.cancel(f.r.requestId, f.r.initiatorSecret);
+      else { f.advance(120000); f.status(); }
+      f.store.releaseConnectedBinding(f.r.requestId, code);
+      assert.equal(f.store.boundRequestId(code), f.r.requestId);
+      f.advance(TOMBSTONE_MS - 1);
+      if (cleanup) f.store.cleanup();
+      assert.equal(f.store.boundRequestId(code), f.r.requestId);
+      f.advance(1); if (cleanup) f.store.cleanup();
+      assert.equal(f.store.boundRequestId(code), null); assert.equal(f.status().code, 404);
+    }
+    const f = fixture({codeGenerator: () => 'CCCCCC'}); f.withdraw();
+    assert.equal(f.store.boundRequestId('CCCCCC'), null);
   });
   test('only winning claim; unknown, missing and wrong scope all generic 404', () => {
     const f = fixture(), safe = {code: 404, body: {error: 'unavailable'}};
@@ -208,11 +229,23 @@ async function sockets() {
     await until(() => initiator.closed && pending.closed);
     assert.equal(initiator.code, 1008); assert.equal(pending.code, 1008);
     passed++;
-    const old = await open(code, 'sender', 'create');
-    old.ws.send(JSON.stringify({type: 'request-auth', requestId: r.requestId, secret: r.initiatorSecret}));
-    await until(() => old.closed); assert.equal(old.code, 1008);
-    // A released code may now be a legacy code; old request-auth still cannot authenticate it.
-    assert.ok(!old.messages.some(m => m.type === 'peer-present'));
+    for (const [role, intent, value] of [['sender', 'create', r.initiatorSecret], ['receiver', 'join', c],
+      ['sender', 'create', null], ['receiver', 'join', null]]) {
+      const old = await open(code, role, intent);
+      old.ws.send(JSON.stringify(value ? {type: 'request-auth', requestId: r.requestId, secret: value} :
+        {type: 'offer', sdp: 'synthetic-quarantine-probe'}));
+      await until(() => old.closed); assert.equal(old.code, 1008);
+      assert.ok(!old.messages.some(m => m.type === 'registration' && m.status === 'ok'));
+      assert.ok(!old.messages.some(m => m.type === 'peer-present' || m.sdp === 'synthetic-quarantine-probe'));
+      passed++;
+    }
+    const arbitrary = await Promise.all([open(code, 'sender', 'create'), open(code, 'receiver', 'join')]);
+    for (const p of arbitrary) p.ws.send(JSON.stringify({type: 'offer', sdp: 'synthetic-arbitrary-peer'}));
+    await until(() => arbitrary.every(p => p.closed));
+    for (const p of arbitrary) {
+      assert.equal(p.code, 1008);
+      assert.ok(!p.messages.some(m => m.status === 'ok' || m.type === 'peer-present' || m.sdp));
+    }
     passed++;
   } finally {
     for (const p of peers) p.ws.terminate(); clearTimeout(timeout);

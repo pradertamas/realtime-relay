@@ -111,8 +111,13 @@ No new registrations/reconnect after CONNECTED are supported in V1; use existing
 media Stop/disconnect and a new request for a new rendezvous.
 
 CONNECTING timeout becomes FAILED/establishment_timeout lazily or through periodic
-cleanup. Cancel in CONNECTING becomes CANCELED. Both invalidate the reservation,
+cleanup. Cancel in CONNECTING becomes CANCELED. Both invalidate setup authorization,
 close pending/authenticated setup sockets and reject subsequent request-auth.
+The code stays protected/quarantined through the existing 120-second request
+terminal tombstone, denying legacy admission and reassignment to other requests.
+Lazy lookup or periodic cleanup deletes the non-CONNECTED tombstone and its code
+mapping together (only if the mapping still names that request). No extra TTL or
+permanent blacklist exists. A binding-free terminal request reserves no code.
 Existing socket session cleanup is not allowed to delete the HTTP request. A code
 may be reused later, but an old request ID/secret cannot authorize that new binding.
 
@@ -125,7 +130,7 @@ reservation remains after media socket cleanup.
 
 CP4-C also allows explicit winning-recipient POST /withdraw before CONNECTED.
 ACCEPTED/CONNECTING -> FAILED/recipient_withdrew uses the same terminal/binding
-invalidation path as Cancel/timeout: release code reservation, close pending and
+invalidation path as Cancel/timeout: quarantine code reservation, close pending and
 authenticated setup sockets, deny the old request's authorization. The same claim
 retry returns 200 without repeating invalidation or extending any timestamps.
 CONNECTED is 409; other terminal outcomes follow authenticated 410 semantics.
