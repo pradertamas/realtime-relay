@@ -6,12 +6,15 @@ const { JoinLimit } = require('./join-limit.cjs');
 const joinLimit = new JoinLimit();
 const { RemotePresence, DEFAULT_ORIGINS } = require('./remote-presence.cjs');
 const remote = new RemotePresence({origins:[...DEFAULT_ORIGINS,...(process.env.REMOTE_ALLOWED_ORIGINS||'').split(',').map(v=>v.trim()).filter(Boolean)]});
+const {ConnectionRequestHttp} = require('./connection-request-http.cjs');
+const requests = new ConnectionRequestHttp();
 
 const PORT = process.env.PORT || 10000;
 const MAX_CLIENTS = 1000;
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 const sessions = new Map();
 const server = http.createServer(async (req, res) => {
+  if(await requests.http(req,res))return;
   if(await remote.http(req,res))return;
   if (req.method === 'GET' && req.url === '/') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -163,6 +166,7 @@ const heartbeat = setInterval(() => {
 heartbeat.unref();
 
 function shutdown() {
+  requests.close();
   clearInterval(heartbeat);
   for (const ws of wss.clients) ws.terminate();
   wss.close();
