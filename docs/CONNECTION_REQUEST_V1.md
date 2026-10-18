@@ -70,6 +70,21 @@ also respect current local role/session guards if local availability changes.
 After successful Accept, winner withdrawal ends setup as FAILED. It never lets
 another recipient take over. A new attempt requires a new request.
 
+Explicit winner withdrawal uses POST /connection-requests/:id/withdraw with only
+the winning recipientClaimSecret as Bearer. ACCEPTED/CONNECTING -> FAILED with
+failureReason recipient_withdrew and terminalAt equal to current server time.
+CONNECTING withdrawal uses the existing binding invalidation: release the reserved
+code and close pending/authenticated setup sockets. Readiness, session setup and
+Accept cannot reopen the request. Backgrounding alone never withdraws.
+
+During the 120-second terminal tombstone, the same winning claim may retry withdraw
+and receive 200 FAILED/recipient_withdrew without changing terminalAt, acceptedAt,
+connectBy or invalidating twice. Other credentials (including initiator secret and
+shared capability), missing auth and unknown IDs receive generic 404 unavailable.
+CONNECTED withdrawal is 409 unavailable. Other terminal outcomes use authenticated
+410; WAITING/EXPIRED have no winning claim, so withdraw auth cannot be established.
+After tombstone removal, withdraw returns generic 404.
+
 Initiator Cancel is allowed in WAITING, ACCEPTED and CONNECTING. It sets CANCELED
 and invalidates all request-bound setup authorizations. After CONNECTED use the
 existing media Stop/disconnect behavior instead of request Cancel.
@@ -265,6 +280,7 @@ responses must not be cached. No cookie/account authentication is required.
 | GET /connection-requests/:id/status | I, shared capability, or winner claim Bearer | Request ID in path | Authorized metadata, state, initiatorRole, serverNow and relevant deadlines | Repeatable; never Accepts; lazy expiry may update expired state |
 | POST /connection-requests/:id/accept | Recipient capability Bearer | claimSecret | requestId, state, serverNow, acceptedAt, connectBy | WAITING -> ACCEPTED; same claim retry is idempotent |
 | POST /connection-requests/:id/cancel | Initiator secret Bearer | No additional required fields | requestId, state, serverNow | WAITING/ACCEPTED/CONNECTING -> CANCELED; repeated CANCELED is idempotent |
+| POST /connection-requests/:id/withdraw | Winning recipientClaimSecret Bearer only | Empty body or JSON {} | requestId, state: FAILED, failureReason: recipient_withdrew, serverNow | ACCEPTED/CONNECTING -> FAILED; same winning claim retry is idempotent during tombstone |
 
 I denotes initiatorSecret. Shared-capability status is limited to preview metadata
 and availability; it never exposes claim identity, session assignment or setup
@@ -279,6 +295,12 @@ does not overwrite it. CONNECTED Cancel is an illegal transition.
 Create response loss can leave an unshared request until expiry. Do not blindly
 retry create as if it were idempotent. Save the successful response atomically
 before opening the Share Sheet. CP0 does not introduce create idempotency keys.
+
+Withdraw follows the connection-request exact-origin CORS and no-store policy.
+Query strings are rejected with 400, even with valid header auth. A nonempty body
+must be application/json and exactly {}; the body limit is 512 bytes. Independent
+withdraw budgets are 30 per request ID/minute and 6000 globally/minute; rejection
+is 429 with Retry-After: 60. No budget is shared with Cancel.
 
 ### Error categories
 

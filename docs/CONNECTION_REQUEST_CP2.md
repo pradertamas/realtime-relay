@@ -45,3 +45,20 @@ trigger. No Decline endpoint or BUSY state is introduced.
 Verification: node verify-connection-acceptance.cjs (fake-clock state/race/security
 groups and local HTTP smoke), existing local verify suite and syntax checks.
 The optional public verify-remote-signaling.cjs is not a local regression test.
+
+## CP4-C extension: winning recipient withdrawal
+
+The earlier CP2 scope above is historical. POST /connection-requests/:id/withdraw
+now accepts only the winning claim Bearer, empty body or JSON {} (512-byte limit).
+ACCEPTED/CONNECTING become FAILED/recipient_withdrew at current server time.
+Same-claim retry returns 200 with requestId/state/failureReason/serverNow, preserving
+the original terminal time and deadlines. Other terminal outcomes return scoped
+410; CONNECTED returns 409. Missing/wrong-scope auth and unknown IDs return the
+same generic 404. No claim exists in WAITING/EXPIRED. Terminal status remains 410
+for initiator/winner and restricted for capability; terminal Accept never reopens.
+
+The existing 120-second tombstone applies from first withdrawal. Withdraw has an
+independent 30/request/minute and 6000/global/minute limiter, Retry-After: 60.
+Query strings are rejected; JSON content type is required for a nonempty {} body.
+Existing CORS/no-store, hash-only secret storage and logging restrictions apply.
+Verification: node verify-connection-withdraw.cjs, alongside all local suites.

@@ -140,6 +140,19 @@ class ConnectionRequestStore {
     this.#terminal(record, 'CANCELED', now);
     return {code: 200, body: {requestId: id, state: record.state, serverNow: new Date(now).toISOString()}};
   }
+  withdraw(id, secret) {
+    const now = this.now(), record = this.#lookup(id, now);
+    if (!record || !this.#matches(secret, record.recipientClaimHash)) return this.#unavailable();
+    if (record.state === 'FAILED' && record.failureReason === 'recipient_withdrew')
+      return {code: 200, body: {requestId: id, state: record.state,
+        failureReason: record.failureReason, serverNow: new Date(now).toISOString()}};
+    if (record.state === 'CONNECTED') return {code: 409, body: {error: 'unavailable'}};
+    if (record.terminalAt !== undefined) return this.#gone(record, now);
+    if (!['ACCEPTED', 'CONNECTING'].includes(record.state)) return {code: 409, body: {error: 'unavailable'}};
+    this.#terminal(record, 'FAILED', now, 'recipient_withdrew');
+    return {code: 200, body: {requestId: id, state: record.state,
+      failureReason: record.failureReason, serverNow: new Date(now).toISOString()}};
+  }
   #participant(record, secret) {
     if (this.#matches(secret, record.initiatorSecretHash)) return 'initiator';
     if (this.#matches(secret, record.recipientClaimHash)) return 'recipient';

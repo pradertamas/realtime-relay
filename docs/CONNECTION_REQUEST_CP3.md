@@ -123,6 +123,14 @@ the CONNECTED request tombstone until all its sockets have closed. It cannot
 downgrade to unauthenticated legacy admission while active. No permanent code
 reservation remains after media socket cleanup.
 
+CP4-C also allows explicit winning-recipient POST /withdraw before CONNECTED.
+ACCEPTED/CONNECTING -> FAILED/recipient_withdrew uses the same terminal/binding
+invalidation path as Cancel/timeout: release code reservation, close pending and
+authenticated setup sockets, deny the old request's authorization. The same claim
+retry returns 200 without repeating invalidation or extending any timestamps.
+CONNECTED is 409; other terminal outcomes follow authenticated 410 semantics.
+No readiness, role mapping, WebSocket protocol or media behavior changes.
+
 ## Legacy compatibility and testing seam
 
 Unreserved codes retain existing immediate legacy CREATE/JOIN, diagnostic mode,
