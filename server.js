@@ -1,6 +1,7 @@
 'use strict';
 
 const http = require('node:http');
+const {isUtf8} = require('node:buffer');
 const { WebSocket, WebSocketServer } = require('ws');
 const { JoinLimit } = require('./join-limit.cjs');
 const { RemotePresence, DEFAULT_ORIGINS } = require('./remote-presence.cjs');
@@ -134,10 +135,13 @@ server.on('upgrade', (req, socket, head) => {
     });
     ws.on('message', (data, isBinary) => {
       if (cleaned) return;
+      // Inspect JSON within the existing 64 KiB WS limit regardless of transport.
+      // Invalid UTF-8/JSON binary payloads retain their opaque forwarding semantics.
+      let message;
+      try { if (!isBinary || isUtf8(data)) message = JSON.parse(data.toString('utf8')); } catch {}
+      // Auth is text-only before registration; after registration it is always invalid control.
+      if (message?.type === 'request-auth') { ws.close(1008, 'Unavailable'); return; }
       if(!isBinary){
-        let message;try{message=JSON.parse(data.toString());}catch{}
-        // Never forward an auth/control payload to a peer, including accidental legacy use.
-        if (message?.type === 'request-auth') { ws.close(1008, 'Unavailable'); return; }
         if(typeof message?.type==='string'&&message.type.startsWith('remote-presence-')){
           let status='denied';
           if(!protectedRequest && message.type==='remote-presence-remove'){remote.remove(ws);status='removed';}
