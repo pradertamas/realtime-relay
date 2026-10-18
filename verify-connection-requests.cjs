@@ -77,7 +77,7 @@ async function main() {
     assert.equal((await status(r, r.initiatorSecret, {Origin: 'https://evil.invalid'})).code, 403);
     assert.equal((await call('/connection-requests', {method: 'OPTIONS', headers: {Origin: ORIGIN,
       'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'x-secret'}})).code, 403);
-    for (const action of ['decline','busy','participant-state','session']) {
+    for (const action of ['decline','busy']) {
       const response = await fetch(`${base}/connection-requests/${r.requestId}/${action}`, {method: 'POST'});
       assert.equal(response.status, 404);
     }

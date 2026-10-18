@@ -154,7 +154,7 @@ async function httpSmoke() {
     now+=60000;
     assert.equal((await call(path+'/accept','POST',r.recipientCapability,{claimSecret:c})).code,410);
     assert.equal((await call(path+'/accept?auth=x','POST',r.recipientCapability,{claimSecret:c})).code,400);
-    for(const endpoint of ['decline','busy','participant-state','session'])assert.equal((await call(path+'/'+endpoint,'POST')).code,404);
+    for(const endpoint of ['decline','busy'])assert.equal((await call(path+'/'+endpoint,'POST')).code,404);
     const second=(await call('/connection-requests','POST',null,{version:1,initiatorRole:'send'})).body;
     assert.equal((await call(`/connection-requests/${second.requestId}/cancel`,'POST',second.initiatorSecret,{})).code,200);
     const race=(await call('/connection-requests','POST',null,{version:1,initiatorRole:'send'})).body;

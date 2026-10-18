@@ -3,16 +3,21 @@
 const http = require('node:http');
 const { WebSocket, WebSocketServer } = require('ws');
 const { JoinLimit } = require('./join-limit.cjs');
-const joinLimit = new JoinLimit();
 const { RemotePresence, DEFAULT_ORIGINS } = require('./remote-presence.cjs');
-const remote = new RemotePresence({origins:[...DEFAULT_ORIGINS,...(process.env.REMOTE_ALLOWED_ORIGINS||'').split(',').map(v=>v.trim()).filter(Boolean)]});
 const {ConnectionRequestHttp} = require('./connection-request-http.cjs');
-const requests = new ConnectionRequestHttp();
+const {ConnectionRequestStore} = require('./connection-request-store.cjs');
+const {RequestSignaling} = require('./request-signaling.cjs');
 
-const PORT = process.env.PORT || 10000;
+function createRelay({port = process.env.PORT || 10000, requestOptions = {}, authOptions = {}} = {}) {
+const joinLimit = new JoinLimit();
+const remote = new RemotePresence({origins:[...DEFAULT_ORIGINS,...(process.env.REMOTE_ALLOWED_ORIGINS||'').split(',').map(v=>v.trim()).filter(Boolean)]});
+const PORT = port;
 const MAX_CLIENTS = 1000;
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 const sessions = new Map();
+const requestStore = new ConnectionRequestStore({...requestOptions, codeAvailable: code => !sessions.has(code)});
+const requests = new ConnectionRequestHttp({store: requestStore});
+const requestSignaling = new RequestSignaling(requestStore, authOptions);
 const server = http.createServer(async (req, res) => {
   if(await requests.http(req,res))return;
   if(await remote.http(req,res))return;
@@ -71,8 +76,12 @@ server.on('upgrade', (req, socket, head) => {
     reject('400 Bad Request', 'invalid session or role');
     return;
   }
+  const boundRequestId = requestStore.boundRequestId(sessionId);
+  if (boundRequestId && ([...url.searchParams.keys()].some(key => !['session','role','intent'].includes(key)) || !intent)) {
+    reject('400 Bad Request', 'invalid registration'); return;
+  }
   // Legacy diagnostic sessions cannot enter explicit pairing sessions.
-  if (!intent && (sessions.get(sessionId)?.[role] || sessions.get(sessionId)?.creator)) {
+  if (!boundRequestId && !intent && (sessions.get(sessionId)?.[role] || sessions.get(sessionId)?.creator)) {
     reject('409 Conflict', 'role occupied');
     return;
   }
@@ -81,14 +90,15 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
+    const register = (ws, protectedRequest = false) => {
     const existing = sessions.get(sessionId);
     if (intent) {
-      const status = intent === 'join' && !joinLimit.allow(sessionId) ? 'rate-limited' : intent === 'create' ? (existing ? 'conflict' : 'ok') :
+      const status = !protectedRequest && intent === 'join' && !joinLimit.allow(sessionId) ? 'rate-limited' : intent === 'create' ? (existing ? 'conflict' : 'ok') :
         !existing?.creator || existing.creator.readyState !== WebSocket.OPEN ? 'not-found' : existing[role] || existing.paired ? 'role-occupied' : 'ok';
       if (status !== 'ok') {
         ws.on('error', () => {});
         ws.send(JSON.stringify({ type: 'registration', status, intent, role }));
-        ws.close(1008, status); return;
+        ws.close(1008, protectedRequest ? 'Unavailable' : status); return false;
       }
     }
     const session = sessions.get(sessionId) || {};
@@ -96,6 +106,7 @@ server.on('upgrade', (req, socket, head) => {
     session[role] = ws;
     if (intent === 'create') session.creator = ws;
     if (intent === 'join') session.paired = true;
+    if (protectedRequest) session.requestBound = true;
     if (intent === 'join') remote.remove(session.creator);
     ws.isAlive = true;
     log('connection accepted', sessionId, role);
@@ -125,10 +136,12 @@ server.on('upgrade', (req, socket, head) => {
       if (cleaned) return;
       if(!isBinary){
         let message;try{message=JSON.parse(data.toString());}catch{}
+        // Never forward an auth/control payload to a peer, including accidental legacy use.
+        if (message?.type === 'request-auth') { ws.close(1008, 'Unavailable'); return; }
         if(typeof message?.type==='string'&&message.type.startsWith('remote-presence-')){
           let status='denied';
-          if(message.type==='remote-presence-remove'){remote.remove(ws);status='removed';}
-          else if(message.type==='remote-presence-register'&&role==='sender'&&intent==='create')status=remote.register(ws,message.token,session,sessionId);
+          if(!protectedRequest && message.type==='remote-presence-remove'){remote.remove(ws);status='removed';}
+          else if(!protectedRequest && message.type==='remote-presence-register'&&role==='sender'&&intent==='create')status=remote.register(ws,message.token,session,sessionId);
           ws.send(JSON.stringify({type:'remote-presence',status}));return;
         }
       }
@@ -142,12 +155,19 @@ server.on('upgrade', (req, socket, head) => {
         if (error) receiver.terminate();
       });
     });
-    if (intent) ws.send(JSON.stringify({type:'registration',status:'ok',intent,role,remotePresence:true}));
-    if (intent === 'join') {
+    if (intent) ws.send(JSON.stringify({type:'registration',status:'ok',intent,role,remotePresence:!protectedRequest}));
+    if (intent === 'join' && !protectedRequest) {
       for (const peer of [session.sender, session.receiver]) {
         if (peer?.readyState === WebSocket.OPEN) peer.send(JSON.stringify({type:'peer-present'}));
       }
     }
+    return true;
+    };
+    if (boundRequestId) {
+      requestSignaling.attach(ws, {requestId: boundRequestId, code: sessionId, role, intent}, peer => register(peer, true));
+    } else if (sessions.get(sessionId)?.requestBound || requestStore.boundRequestId(sessionId)) {
+      ws.on('error', () => {}); ws.close(1008, 'Unavailable');
+    } else register(ws);
   });
 });
 
@@ -166,17 +186,25 @@ const heartbeat = setInterval(() => {
 heartbeat.unref();
 
 function shutdown() {
+  requestSignaling.close();
   requests.close();
   clearInterval(heartbeat);
   for (const ws of wss.clients) ws.terminate();
   wss.close();
   server.close();
 }
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
 server.on('error', (error) => {
   log('server error', null, null, error.code || 'listen failed');
   shutdown();
   process.exitCode = 1;
 });
-server.listen(PORT, '0.0.0.0', () => log('server start', null, null, `port ${PORT}`));
+return {server, requestStore, requests, shutdown,
+  start() { server.listen(PORT, '0.0.0.0', () => log('server start', null, null, `port ${server.address().port}`)); }};
+}
+module.exports = {createRelay};
+if (require.main === module) {
+  const relay = createRelay();
+  process.on('SIGTERM', relay.shutdown);
+  process.on('SIGINT', relay.shutdown);
+  relay.start();
+}

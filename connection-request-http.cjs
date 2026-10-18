@@ -8,8 +8,10 @@ class ConnectionRequestHttp {
     statusLimit = new JoinLimit({perCode: 120, total: 60000}),
     acceptLimit = new JoinLimit({perCode: 30, total: 6000}),
     cancelLimit = new JoinLimit({perCode: 30, total: 6000}),
+    participantLimit = new JoinLimit({perCode: 180, total: 60000}),
+    sessionLimit = new JoinLimit({perCode: 30, total: 6000}),
     schedule = setInterval, cancel = clearInterval} = {}) {
-    Object.assign(this, {store, createLimit, statusLimit, acceptLimit, cancelLimit, cancel});
+    Object.assign(this, {store, createLimit, statusLimit, acceptLimit, cancelLimit, participantLimit, sessionLimit, cancel});
     this.timer = schedule(() => store.cleanup(), CLEANUP_MS);
     this.timer.unref?.();
   }
@@ -18,7 +20,7 @@ class ConnectionRequestHttp {
     const path = (req.url || '').split('?')[0];
     const create = path === '/connection-requests';
     const status = /^\/connection-requests\/([^/]+)\/status$/.exec(path);
-    const mutation = /^\/connection-requests\/([^/]+)\/(accept|cancel)$/.exec(path);
+    const mutation = /^\/connection-requests\/([^/]+)\/(accept|cancel|participant-state|session)$/.exec(path);
     if (!create && !status && !mutation) return false;
     const headers = {'Cache-Control': 'no-store', 'Content-Type': 'application/json', 'Vary': 'Origin'};
     const reply = (code, body) => { res.writeHead(code, headers); res.end(JSON.stringify(body)); };
@@ -43,9 +45,9 @@ class ConnectionRequestHttp {
     const secret = match ? match[1] : null;
     if (create || mutation) {
       const action = create ? 'create' : mutation[2];
-      const limit = this[`${action}Limit`];
+      const limit = this[`${action === 'participant-state' ? 'participant' : action}Limit`];
       if (!limit.allow(create ? 'create' : mutation[1].slice(0, 64))) { headers['Retry-After'] = '60'; return reject(429); }
-      if (action !== 'cancel' && !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return reject(400);
+      if (!['cancel','session'].includes(action) && !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return reject(400);
       try {
         const chunks = []; let bytes = 0;
         for await (const chunk of req) {
@@ -63,10 +65,13 @@ class ConnectionRequestHttp {
         } else if (action === 'accept') {
           if (!body || Array.isArray(body) || Object.keys(body).length !== 1 || !canonical(body.claimSecret, 32)) return reject(400);
           result = this.store.accept(mutation[1], secret, body.claimSecret);
+        } else if (action === 'participant-state') {
+          if (!body || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.ready !== 'boolean') return reject(400);
+          result = this.store.participantState(mutation[1], secret, body.ready);
         } else {
           if (raw && (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '') ||
             !body || Array.isArray(body) || Object.keys(body).length !== 0)) return reject(400);
-          result = this.store.cancel(mutation[1], secret);
+          result = action === 'session' ? this.store.session(mutation[1], secret) : this.store.cancel(mutation[1], secret);
         }
         reply(result.code, result.body);
       } catch { if (!res.writableEnded) reply(400, {error: 'invalid_request'}); }
