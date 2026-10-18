@@ -77,7 +77,7 @@ async function main() {
     assert.equal((await status(r, r.initiatorSecret, {Origin: 'https://evil.invalid'})).code, 403);
     assert.equal((await call('/connection-requests', {method: 'OPTIONS', headers: {Origin: ORIGIN,
       'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'x-secret'}})).code, 403);
-    for (const action of ['accept','cancel','participant-state','session']) {
+    for (const action of ['decline','busy','participant-state','session']) {
       const response = await fetch(`${base}/connection-requests/${r.requestId}/${action}`, {method: 'POST'});
       assert.equal(response.status, 404);
     }
@@ -145,7 +145,17 @@ async function integratedSmoke() {
     assert.equal((await status(request.initiatorSecret)).body.state,'WAITING');
     assert.equal((await status(request.recipientCapability)).body.state,'WAITING');
     assert.equal((await status('A'.repeat(43))).code,404);
-    for(const secret of [request.recipientCapability,request.initiatorSecret,'AAAAAAAAAAAAAAAAAAAAAA']) assert.ok(!logs.includes(secret));
+    const claimSecret = require('node:crypto').randomBytes(32).toString('base64url');
+    async function mutate(action, secret, body) {
+      const response = await fetch(`${base}/connection-requests/${request.requestId}/${action}`, {method:'POST',
+        headers:{Authorization:`Bearer ${secret}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+      return {code:response.status,body:await response.json()};
+    }
+    assert.equal((await mutate('accept',request.recipientCapability,{claimSecret})).code,200);
+    assert.equal((await status(claimSecret)).body.state,'ACCEPTED');
+    assert.equal((await mutate('cancel',request.initiatorSecret,{})).code,200);
+    assert.equal((await status(claimSecret)).code,410);
+    for(const secret of [claimSecret,request.recipientCapability,request.initiatorSecret,'AAAAAAAAAAAAAAAAAAAAAA']) assert.ok(!logs.includes(secret));
     assert.ok(!logs.includes('Authorization') && !logs.includes('CapabilityHash') && !logs.includes('SecretHash'));
     console.log('PASS local HTTP smoke + real signaling/presence socket cleanup independence and secret-free server logs.');
   } finally {
