@@ -1,4 +1,5 @@
 'use strict';
+const {createHash} = require('node:crypto');
 const AUTH_TIMEOUT_MS = 10000;
 // Owns only request-bound socket handshakes/presence. Payload relay stays in server.js.
 class RequestSignaling {
@@ -23,14 +24,18 @@ class RequestSignaling {
     group.all.add(ws);
     ws.isAlive = true;
     let participant = null, finished = false, cleaned = false;
-    const fail = () => { finished = true; this.cancel(timer); ws.close(1008, 'Unavailable'); };
-    const timer = this.schedule(fail, this.authTimeoutMs);
+    // Correlates with Android RequestFlow without exposing request IDs, codes or auth frames.
+    const request = createHash('sha256').update(requestId).digest('hex').slice(0, 12);
+    const trace = (event, reason, side = participant) => console.log(JSON.stringify({event, request, side, role, intent, ...(reason && {reason})}));
+    const fail = reason => { trace('protected_auth_or_registration_failed', reason); finished = true; this.cancel(timer); ws.close(1008, 'Unavailable'); };
+    const timer = this.schedule(() => fail('auth_timeout'), this.authTimeoutMs);
     timer.unref?.();
     ws.on('error', () => {});
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
       finished = true; this.cancel(timer);
+      trace('protected_socket_closed');
       group.all.delete(ws);
       if (participant && group.registered.get(participant) === ws) group.registered.delete(participant);
       if (!group.all.size) {
@@ -44,23 +49,26 @@ class RequestSignaling {
       if (finished) return;
       let message;
       try {
-        if (binary || data.length > 512) return fail();
+        if (binary || data.length > 512) return fail('invalid_auth_frame');
         message = JSON.parse(data.toString('utf8'));
-      } catch { return fail(); }
+      } catch { return fail('invalid_auth_frame'); }
       if (!message || Array.isArray(message) || Object.keys(message).length !== 3 ||
-        message.type !== 'request-auth' || message.requestId !== requestId || typeof message.secret !== 'string') return fail();
+        message.type !== 'request-auth' || message.requestId !== requestId || typeof message.secret !== 'string') return fail('invalid_auth_frame');
       const kind = this.store.authorizeSocket(requestId, code, message.secret, role, intent);
-      if (!kind || group.registered.has(kind) || this.#groups.get(requestId) !== group) return fail();
+      if (!kind || group.registered.has(kind) || this.#groups.get(requestId) !== group) return fail('unauthorized_or_duplicate');
+      trace('protected_auth_ok', null, kind);
       // The existing registration path must succeed before this participant counts.
       ws.removeListener('message', authenticate);
       this.cancel(timer);
-      if (!register(ws)) return fail();
+      if (!register(ws)) return fail('registration_rejected');
       participant = kind;
       group.registered.set(kind, ws);
       finished = true;
+      trace('protected_registration_ok');
       if (group.registered.size === 2) {
         if (!this.store.completeBinding(requestId)) return this.invalidate(requestId);
         for (const peer of group.registered.values()) peer.send(JSON.stringify({type: 'peer-present'}));
+        trace('protected_peer_present');
         // No additional socket may join once both authenticated participants are present.
         for (const peer of group.all) if (![...group.registered.values()].includes(peer)) peer.close(1008, 'Unavailable');
       }

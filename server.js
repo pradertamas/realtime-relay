@@ -94,7 +94,13 @@ server.on('upgrade', (req, socket, head) => {
     const register = (ws, protectedRequest = false) => {
     const existing = sessions.get(sessionId);
     if (intent) {
-      const status = !protectedRequest && intent === 'join' && !joinLimit.allow(sessionId) ? 'rate-limited' : intent === 'create' ? (existing ? 'conflict' : 'ok') :
+      // Only RequestSignaling can call this path after exact request/assignment auth.
+      // A protected JOIN may register first while the sender awaits system consent.
+      // Its room is reserved by requestStore; the later authenticated creator adopts it.
+      const waitingRequest = protectedRequest && existing?.requestBound && !existing.creator && !existing[role];
+      const status = !protectedRequest && intent === 'join' && !joinLimit.allow(sessionId) ? 'rate-limited' : intent === 'create' ?
+        (existing && !waitingRequest ? 'conflict' : 'ok') : protectedRequest ?
+        (existing?.[role] || existing?.paired ? 'role-occupied' : 'ok') :
         !existing?.creator || existing.creator.readyState !== WebSocket.OPEN ? 'not-found' : existing[role] || existing.paired ? 'role-occupied' : 'ok';
       if (status !== 'ok') {
         ws.on('error', () => {});
